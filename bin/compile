@@ -10,14 +10,74 @@ BUILD_DIR=$1
 CACHE_DIR=$2
 VENDOR_DIR="$BUILD_DIR/vendor"
 INSTALL_DIR="$VENDOR_DIR/imagemagick"
-IMAGE_MAGICK_VERSION="${IMAGE_MAGICK_VERSION:-7.0.5-10}"
+INSTALL_AOM_DIR="$VENDOR_DIR/aom"
+INSTALL_HEIF_DIR="$VENDOR_DIR/heif"
+AOM_VERSION="${AOM_VERSION:-3.12.0}"
+HEIF_VERSION="${HEIF_VERSION:-1.19.7}"
+IMAGE_MAGICK_VERSION="${IMAGE_MAGICK_VERSION:-7.1.1-46}"
 CACHE_FILE="$CACHE_DIR/imagemagick-$IMAGE_MAGICK_VERSION.tar.gz"
 
 if [ ! -f $CACHE_FILE ]; then
+  # install aom
+  AOM_FILE="v$AOM_VERSION.tar.gz"
+  AOM_DIR="aom-$AOM_VERSION"
+  AOM_URL="https://aomedia.googlesource.com/aom/+archive/$AOM_FILE"
+
+  echo "-----> Downloading AOM from $AOM_URL"
+  wget $AOM_URL -P $BUILD_DIR | indent
+
+  echo "-----> Extracting AOM from $BUILD_DIR/$AOM_FILE"
+  if [ ! -f $BUILD_DIR/$AOM_FILE ]; then
+    echo "Error: Unable to download AOM" | indent
+    ls $BUILD_DIR | indent
+    exit 1;
+  fi
+  mkdir -p $BUILD_DIR/$AOM_DIR
+  tar xvf $BUILD_DIR/$AOM_FILE -C $BUILD_DIR/$AOM_DIR | indent
+
+  echo "-----> Building AOM"
+  mkdir $BUILD_DIR/aom_build
+  cd $BUILD_DIR/aom_build
+  cmake $BUILD_DIR/$AOM_DIR -DCMAKE_INSTALL_PREFIX=$INSTALL_AOM_DIR -DCMAKE_BUILD_TYPE=Release -DAOM_TARGET_CPU=generic -DENABLE_DOCS=0 -DENABLE_EXAMPLES=0 -DENABLE_TESTDATA=0 -DENABLE_TESTS=0 -DENABLE_TOOLS=0
+  make && make install
+  cd ..
+  rm -rf $AOM_DIR
+  rm -rf aom_build
+
+  # install libheif
+  HEIF_FILE="libheif-$HEIF_VERSION.tar.gz"
+  HEIF_DIR="libheif-$HEIF_VERSION"
+  HEIF_URL="https://github.com/strukturag/libheif/releases/download/v$HEIF_VERSION/$HEIF_FILE"
+
+  echo "-----> Downloading libheif from $HEIF_URL"
+  wget $HEIF_URL -P $BUILD_DIR | indent
+
+  echo "-----> Extracting libheif from $BUILD_DIR/$HEIF_FILE"
+  if [ ! -f $BUILD_DIR/$HEIF_FILE ]; then
+    echo "Error: Unable to download libheif" | indent
+    ls $BUILD_DIR | indent
+    exit 1;
+  fi
+  mkdir -p $BUILD_DIR/$HEIF_DIR
+  tar xvf $BUILD_DIR/$HEIF_FILE -C $BUILD_DIR | indent
+
+  echo "-----> Building libheif"
+  mkdir $BUILD_DIR/heif_build
+  cd $BUILD_DIR/heif_build
+  export PKG_CONFIG_PATH="$INSTALL_AOM_DIR/lib/pkgconfig"
+  export CPPFLAGS="-I$INSTALL_AOM_DIR/include -I/usr/include"
+  export LDFLAGS="-L$INSTALL_AOM_DIR/lib -L/usr/lib -Wl,-rpath,$INSTALL_AOM_DIR/lib"
+  export LD_LIBRARY_PATH=$INSTALL_AOM_DIR/lib:/usr/lib:$LD_LIBRARY_PATH
+  cmake $BUILD_DIR/$HEIF_DIR --preset=release -DCMAKE_INSTALL_PREFIX=$INSTALL_HEIF_DIR -DWITH_JPEG_DECODER=ON -DWITH_JPEG_ENCODER=ON -DWITH_OPENJPEG_DECODER=ON -DWITH_OPENJPEG_ENCODER=ON
+  make && make install
+  cd ..
+  rm -rf $HEIF_DIR
+  rm -rf heif_build
+
   # install imagemagick
   IMAGE_MAGICK_FILE="ImageMagick-$IMAGE_MAGICK_VERSION.tar.xz"
   IMAGE_MAGICK_DIR="ImageMagick-$IMAGE_MAGICK_VERSION"
-  IMAGE_MAGICK_URL="https://www.imagemagick.org/download/releases/$IMAGE_MAGICK_FILE"
+  IMAGE_MAGICK_URL="https://download.imagemagick.org/archive/releases/$IMAGE_MAGICK_FILE"
 
   echo "-----> Downloading ImageMagick from $IMAGE_MAGICK_URL"
   wget $IMAGE_MAGICK_URL -P $BUILD_DIR | indent
@@ -28,13 +88,17 @@ if [ ! -f $CACHE_FILE ]; then
     ls $BUILD_DIR | indent
     exit 1;
   fi
-  tar xvf $BUILD_DIR/$IMAGE_MAGICK_FILE | indent
+  mkdir -p $BUILD_DIR/$IMAGE_MAGICK_DIR
+  tar xvf $BUILD_DIR/$IMAGE_MAGICK_FILE -C $BUILD_DIR | indent
 
   echo "-----> Building ImageMagick"
-  cd $IMAGE_MAGICK_DIR
-  export CPPFLAGS="-I$INSTALL_DIR/include"
-  export LDFLAGS="-L$INSTALL_DIR/lib"
-  ./configure --prefix=$INSTALL_DIR
+  cd $BUILD_DIR/$IMAGE_MAGICK_DIR
+  
+  export PKG_CONFIG_PATH=$INSTALL_HEIF_DIR/lib/pkgconfig:$INSTALL_AOM_DIR/lib/pkgconfig:$PKG_CONFIG_PATH
+  export CPPFLAGS="-I$INSTALL_HEIF_DIR/include -I$INSTALL_AOM_DIR/include $CPPFLAGS -I/usr/include"
+  export LDFLAGS="-L/usr/lib -L$INSTALL_HEIF_DIR/lib -L$INSTALL_AOM_DIR/lib -Wl,-rpath,/usr/lib -Wl,-rpath,$INSTALL_HEIF_DIR/lib -Wl,-rpath,$INSTALL_AOM_DIR/lib $LDFLAGS"
+  export LD_LIBRARY_PATH=$INSTALL_HEIF_DIR/lib:$INSTALL_AOM_DIR/lib:/usr/lib:$LD_LIBRARY_PATH
+  ./configure --prefix=$INSTALL_DIR --enable-shared --with-heic=yes --with-modules --with-jpeg=yes
   make && make install
   cd ..
   rm -rf $IMAGE_MAGICK_DIR
@@ -43,7 +107,9 @@ if [ ! -f $CACHE_FILE ]; then
   echo "-----> Caching ImageMagick installation"
   cd $VENDOR_DIR
   REL_INSTALL_DIR="imagemagick"
-  tar czf $REL_INSTALL_DIR.tar.gz $REL_INSTALL_DIR
+  AOM_REL_INSTALL_DIR="aom"
+  HEIF_REL_INSTALL_DIR="heif"
+  tar czf $REL_INSTALL_DIR.tar.gz $REL_INSTALL_DIR $AOM_REL_INSTALL_DIR $HEIF_REL_INSTALL_DIR
 
   if [ ! -d $CACHE_DIR ]; then
     mkdir -p $CACHE_DIR
@@ -58,31 +124,12 @@ else
   tar xzf $CACHE_FILE -C $VENDOR_DIR
 fi
 
-echo "-----> Writing policy file"
-mkdir -p $INSTALL_DIR/etc/ImageMagick
-cat > $INSTALL_DIR/policy.xml <<EOF
-<policymap>
-  <policy domain="coder" rights="none" pattern="EPHEMERAL" />
-  <policy domain="coder" rights="none" pattern="HTTPS" />
-  <policy domain="coder" rights="none" pattern="MVG" />
-  <policy domain="coder" rights="none" pattern="MSL" />
-</policymap>
-EOF
-
-echo "-----> Writing config file"
-cat > $INSTALL_DIR/magic.xml <<EOF
-<magicmap>
- <magic name="JPEG" offset="0" target="\377\330\377"/> 
- <magic name="PNG" offset="0" target="\211PNG\r\n\032\n"/> 
-</magicmap>
-EOF
-
 # update PATH and LD_LIBRARY_PATH
 echo "-----> Updating environment variables"
 PROFILE_PATH="$BUILD_DIR/.profile.d/imagemagick.sh"
 ACTUAL_INSTALL_PATH="$HOME/vendor/imagemagick"
 mkdir -p $(dirname $PROFILE_PATH)
 echo "export PATH=$ACTUAL_INSTALL_PATH/bin:\$PATH" >> $PROFILE_PATH
-echo "export LD_LIBRARY_PATH=$ACTUAL_INSTALL_PATH/lib:\$LD_LIBRARY_PATH:/usr/local/lib" >> $PROFILE_PATH
-echo "export MAGICK_CONFIGURE_PATH=$ACTUAL_INSTALL_PATH" >> $PROFILE_PATH
+echo "export LD_LIBRARY_PATH=$ACTUAL_INSTALL_PATH/lib:\$LD_LIBRARY_PATH:/usr/lib" >> $PROFILE_PATH
+echo "export MAGICK_CONFIGURE_PATH=$ACTUAL_INSTALL_PATH/etc/ImageMagick-7" >> $PROFILE_PATH
 echo "-----> Done updating environment variables. All set for ImageMagick."
